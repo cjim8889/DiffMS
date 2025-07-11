@@ -3,6 +3,7 @@ import sys
 import pathlib
 import warnings
 import logging
+from datetime import datetime
 
 import torch
 torch.cuda.empty_cache()
@@ -179,12 +180,16 @@ def main(cfg: DictConfig):
         callbacks.append(ema_callback)
 
     name = cfg.general.name
+    # Add timestamp to wandb name (day/month hour:minutes)
+    timestamp = datetime.now().strftime("%d/%m_%H:%M")
+    wandb_name = f"{name}_{timestamp}"
+    
     if name == 'debug':
         logging.warning("Run is called 'debug' -- it will run with fast_dev_run. ")
 
     loggers = [
         CSVLogger(save_dir=f"logs/{name}", name=name),
-        WandbLogger(name=name, save_dir=f"logs/{name}", project=cfg.general.wandb_name, log_model=False, config=utils.cfg_to_dict(cfg))
+        WandbLogger(name=wandb_name, save_dir=f"logs/{name}", project=cfg.general.wandb_name, log_model=False, config=utils.cfg_to_dict(cfg))
     ]
 
     use_gpu = cfg.general.gpus > 0 and torch.cuda.is_available()
