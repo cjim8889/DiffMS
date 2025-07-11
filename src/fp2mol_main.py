@@ -94,6 +94,7 @@ def main(cfg: DictConfig):
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    global sys
     ch = logging.StreamHandler(stream=sys.stdout)
     ch.setFormatter(formatter)
     logger.addHandler(ch)
@@ -121,6 +122,7 @@ def main(cfg: DictConfig):
     datamodule = fp2mol_dataset.FP2MolDataModule(cfg)
     logging.info("Dataset loaded")
     logging.info(f"Train Size: {len(datamodule.train_dataloader())}, Val Size: {len(datamodule.val_dataloader())}, Test Size: {len(datamodule.test_dataloader())}")
+    
     dataset_infos = fp2mol_dataset.FP2Mol_infos(datamodule, cfg, recompute_statistics=False)
 
     domain_features = ExtraMolecularFeatures(dataset_infos=dataset_infos)
@@ -157,7 +159,8 @@ def main(cfg: DictConfig):
     os.makedirs('logs/' + cfg.general.name, exist_ok=True)
 
     model = FP2MolDenoisingDiffusion(cfg=cfg, **model_kwargs)
-            
+    model.forward = torch.compile(model.forward, fullgraph=True)
+
     callbacks = []
     callbacks.append(LearningRateMonitor(logging_interval='step'))
     if cfg.train.save_model:
@@ -194,7 +197,8 @@ def main(cfg: DictConfig):
                       fast_dev_run=cfg.general.name == 'debug',
                       callbacks=callbacks,
                       log_every_n_steps=50 if name != 'debug' else 1,
-                      logger=loggers)
+                      logger=loggers,
+                      precision="bf16")
 
     if not cfg.general.test_only:
         trainer.fit(model, datamodule=datamodule, ckpt_path=cfg.general.resume)

@@ -1,4 +1,4 @@
-for dataset in hmdb dss coconut moses canopus msg combined
+for dataset in msg combined pubchem
 do
     mkdir data/fp2mol/$dataset/
     mkdir data/fp2mol/$dataset/preprocessed/
@@ -7,4 +7,4 @@ do
 done
 
 cd data_processing/
-python build_fp2mol_datasets.py
+# python build_fp2mol_datasets.py

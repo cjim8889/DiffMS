@@ -8,6 +8,9 @@ from rdkit import Chem
 from rdkit import RDLogger
 from rdkit.Chem import Descriptors
 
+import multiprocessing
+import os
+
 random.seed(42)
 
 lg = RDLogger.logger()
@@ -68,212 +71,111 @@ def filter_with_atom_types(mol):
     
     return True
 
-########## CANOPUS DATASET ##########
+def process_smiles(smi):
+    try:
+        mol = Chem.MolFromSmiles(smi)
+        smi = Chem.MolToSmiles(mol, isomericSmiles=False)  # remove stereochemistry information
+        mol = Chem.MolFromSmiles(smi)
+        if filter_with_atom_types(mol):
+            return Chem.MolToInchi(mol)
+    except:
+        pass
+    return None
 
-canopus_split = pd.read_csv('../data/canopus/splits/canopus_hplus_100_0.tsv', sep='\t')
+splits = {'train': 'data/train-00000-of-00001-e9b227f8c7259c8b.parquet', 'validation': 'data/validation-00000-of-00001-9368b7243ba1bff8.parquet'}
+df = pd.read_parquet("hf://datasets/sagawa/pubchem-10m-canonicalized/" + splits["train"])
 
-canopus_labels = pd.read_csv('../data/canopus/labels.tsv', sep='\t')
-canopus_labels["name"] = canopus_labels["spec"]
-canopus_labels = canopus_labels[["name", "smiles"]].reset_index(drop=True)
+pubchem_train_path = "./data/fp2mol/pubchem/preprocessed/pubchem_train.csv"
+pubchem_val_path = "./data/fp2mol/pubchem/preprocessed/pubchem_val.csv"
 
-canopus_labels = canopus_labels.merge(canopus_split, on="name")
+if os.path.exists(pubchem_train_path) and os.path.exists(pubchem_val_path):
+    pubchem_train_df = pd.read_csv(pubchem_train_path)
+    pubchem_train_inchis = list(pubchem_train_df["inchi"])
+    pubchem_val_df = pd.read_csv(pubchem_val_path)
+    pubchem_val_inchis = list(pubchem_val_df["inchi"])
+else:
+    pubchem_set_raw = set(df["smiles"])
 
-canopus_train_inchis = []
-canopus_test_inchis = []
-canopus_val_inchis = []
+    pubchem_smiles_list = list(pubchem_set_raw)
+    with multiprocessing.Pool() as pool:
+        results = list(tqdm(pool.imap(process_smiles, pubchem_smiles_list), total=len(pubchem_smiles_list), desc="Cleaning PubChem structures", leave=False))
+    pubchem_set = set(r for r in results if r is not None)
 
-for i in tqdm(range(len(canopus_labels)), desc="Converting CANOPUS SMILES to InChI", leave=False):
-    
-    mol = Chem.MolFromSmiles(canopus_labels.loc[i, "smiles"])
-    smi = Chem.MolToSmiles(mol, isomericSmiles=False) # remove stereochemistry information
-    mol = Chem.MolFromSmiles(smi)
-    inchi = Chem.MolToInchi(mol)
+    pubchem_inchis = list(pubchem_set)
+    random.shuffle(pubchem_inchis)
 
-    if canopus_labels.loc[i, "split"] == "train":
-        if filter(mol):
-            canopus_train_inchis.append(inchi)
-    elif canopus_labels.loc[i, "split"] == "test":
-        canopus_test_inchis.append(inchi)
-    elif canopus_labels.loc[i, "split"] == "val":
-        canopus_val_inchis.append(inchi)
+    pubchem_train_inchis = pubchem_inchis[:int(0.95 * len(pubchem_inchis))]
+    pubchem_val_inchis = pubchem_inchis[int(0.95 * len(pubchem_inchis)):]
 
-canopus_train_df = pd.DataFrame(set(canopus_train_inchis), columns=["inchi"])
-canopus_train_df.to_csv("../data/fp2mol/canopus/preprocessed/canopus_train.csv", index=False)
+    pubchem_train_df = pd.DataFrame({"inchi": pubchem_train_inchis})
+    pubchem_train_df.to_csv(pubchem_train_path, index=False)
 
-canopus_test_df = pd.DataFrame(canopus_test_inchis, columns=["inchi"])
-canopus_test_df.to_csv("../data/fp2mol/canopus/preprocessed/canopus_test.csv", index=False)
+    pubchem_val_df = pd.DataFrame({"inchi": pubchem_val_inchis})
+    pubchem_val_df.to_csv(pubchem_val_path, index=False)
 
-canopus_val_df = pd.DataFrame(canopus_val_inchis, columns=["inchi"])
-canopus_val_df.to_csv("../data/fp2mol/canopus/preprocessed/canopus_val.csv", index=False)
+excluded_inchis = set(pubchem_val_inchis)
 
-excluded_inchis = set(canopus_test_inchis + canopus_val_inchis)
+msg_split = pd.read_csv('./data/msg/split.tsv', sep='\t')
 
-########## MSG DATASET ##########
-
-msg_split = pd.read_csv('../data/msg/split.tsv', sep='\t')
-
-msg_labels = pd.read_csv('../data/msg/labels.tsv', sep='\t')
+msg_labels = pd.read_csv('./data/msg/labels.tsv', sep='\t')
 msg_labels["name"] = msg_labels["spec"]
 msg_labels = msg_labels[["name", "smiles"]].reset_index(drop=True)
 
 msg_labels = msg_labels.merge(msg_split, on="name")
 
+def process_msg(item):
+    smiles, split_val = item
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        smi = Chem.MolToSmiles(mol, isomericSmiles=False) # remove stereochemistry information
+        mol = Chem.MolFromSmiles(smi)
+        inchi = Chem.MolToInchi(mol)
+
+        if split_val == "train":
+            if filter(mol):
+                return (inchi, split_val)
+            else:
+                return None
+        else:
+            return (inchi, split_val)
+    except:
+        return None
+
+msg_items = list(zip(msg_labels["smiles"], msg_labels["split"]))
+
+with multiprocessing.Pool() as pool:
+    results = list(tqdm(pool.imap(process_msg, msg_items), total=len(msg_items), desc="Converting MSG SMILES to InChI", leave=False))
+
 msg_train_inchis = []
 msg_test_inchis = []
 msg_val_inchis = []
 
-for i in tqdm(range(len(msg_labels)), desc="Converting MSG SMILES to InChI", leave=False):
-    
-    mol = Chem.MolFromSmiles(msg_labels.loc[i, "smiles"])
-    smi = Chem.MolToSmiles(mol, isomericSmiles=False) # remove stereochemistry information
-    mol = Chem.MolFromSmiles(smi)
-    inchi = Chem.MolToInchi(mol)
-
-    if msg_labels.loc[i, "split"] == "train":
-        if filter(mol):
+for res in results:
+    if res is not None:
+        inchi, split_val = res
+        if split_val == "train":
             msg_train_inchis.append(inchi)
-    elif msg_labels.loc[i, "split"] == "test":
-        msg_test_inchis.append(inchi)
-    elif msg_labels.loc[i, "split"] == "val":
-        msg_val_inchis.append(inchi)
+        elif split_val == "test":
+            msg_test_inchis.append(inchi)
+        elif split_val == "val":
+            msg_val_inchis.append(inchi)
 
-msg_train_df = pd.DataFrame(set(msg_train_inchis), columns=["inchi"])
-msg_train_df.to_csv("../data/fp2mol/msg/preprocessed/msg_train.csv", index=False)
+msg_train_inchis = list(set(msg_train_inchis))
+msg_test_inchis = list(set(msg_test_inchis))
+msg_val_inchis = list(set(msg_val_inchis))  
 
-msg_test_df = pd.DataFrame(msg_test_inchis, columns=["inchi"])
-msg_test_df.to_csv("../data/fp2mol/msg/preprocessed/msg_test.csv", index=False)
+msg_train_df = pd.DataFrame({"inchi": msg_train_inchis})
+msg_train_df.to_csv("./data/fp2mol/msg/preprocessed/msg_train.csv", index=False)
 
-msg_val_df = pd.DataFrame(msg_val_inchis, columns=["inchi"])
-msg_val_df.to_csv("../data/fp2mol/msg/preprocessed/msg_val.csv", index=False)
+msg_test_df = pd.DataFrame({"inchi": msg_test_inchis})
+msg_test_df.to_csv("./data/fp2mol/msg/preprocessed/msg_test.csv", index=False)
+
+msg_val_df = pd.DataFrame({"inchi": msg_val_inchis})
+msg_val_df.to_csv("./data/fp2mol/msg/preprocessed/msg_val.csv", index=False)
 
 excluded_inchis.update(msg_test_inchis + msg_val_inchis)
 
-########## HMDB DATASET ##########
-
-hmdb_set = set()
-raw_smiles = read_from_sdf('../data/fp2mol/raw/structures.sdf')
-for smi in tqdm(raw_smiles, desc='Cleaning HMDB structures', leave=False):
-    try:
-        mol = Chem.MolFromSmiles(smi)
-        smi = Chem.MolToSmiles(mol, isomericSmiles=False) # remove stereochemistry information
-        mol = Chem.MolFromSmiles(smi)
-        if filter_with_atom_types(mol):
-            hmdb_set.add(Chem.MolToInchi(mol))
-    except:
-        pass
-
-hmdb_inchis = list(hmdb_set)
-random.shuffle(hmdb_inchis)
-
-hmdb_train_inchis = hmdb_inchis[:int(0.95 * len(hmdb_inchis))]
-hmdb_val_inchis = hmdb_inchis[int(0.95 * len(hmdb_inchis)):]
-
-hmdb_train_inchis = [inchi for inchi in hmdb_train_inchis if inchi not in excluded_inchis]
-
-hmdb_train_df = pd.DataFrame(hmdb_train_inchis, columns=["inchi"])
-hmdb_train_df.to_csv("../data/fp2mol/hmdb/preprocessed/hmdb_train.csv", index=False)
-
-hmdb_val_df = pd.DataFrame(hmdb_val_inchis, columns=["inchi"])
-hmdb_val_df.to_csv("../data/fp2mol/hmdb/preprocessed/hmdb_val.csv", index=False)
-
-########## DSSTox DATASET ##########
-
-dss_set_raw = set()
-for i in tqdm(range(1, 14), desc='Loading DSSTox structures', leave=False):
-    df = pd.read_excel(f'../data/fp2mol/raw/DSSToxDump{i}.xlsx')
-    dss_set_raw.update(df[df['SMILES'].notnull()]['SMILES'])
-
-dss_set = set()
-for smi in tqdm(dss_set_raw, desc='Cleaning DSSTox structures', leave=False):
-    try:
-        mol = Chem.MolFromSmiles(smi)
-        smi = Chem.MolToSmiles(mol, isomericSmiles=False) # remove stereochemistry information
-        mol = Chem.MolFromSmiles(smi)
-        if filter_with_atom_types(mol):
-            dss_set.add(Chem.MolToInchi(mol))
-    except:
-        pass
-
-dss_inchis = list(dss_set)
-random.shuffle(dss_inchis)
-
-dss_train_inchis = dss_inchis[:int(0.95 * len(dss_inchis))]
-dss_val_inchis = dss_inchis[int(0.95 * len(dss_inchis)):]
-
-dss_train_inchis = [inchi for inchi in dss_train_inchis if inchi not in excluded_inchis]
-
-dss_train_df = pd.DataFrame(dss_train_inchis, columns=["inchi"])
-dss_train_df.to_csv("../data/fp2mol/dss/preprocessed/dss_train.csv", index=False)
-
-dss_val_df = pd.DataFrame(dss_val_inchis, columns=["inchi"])
-dss_val_df.to_csv("../data/fp2mol/dss/preprocessed/dss_val.csv", index=False)
-
-########## COCONUT DATASET ##########
-
-coconut_df = pd.read_csv('../data/fp2mol/raw/coconut_csv-03-2025.csv')
-
-coconut_set_raw = set(coconut_df["canonical_smiles"])
-
-coconut_set = set()
-for smi in tqdm(coconut_set_raw, desc='Cleaning COCONUT structures', leave=False):
-    try:
-        mol = Chem.MolFromSmiles(smi)
-        smi = Chem.MolToSmiles(mol, isomericSmiles=False) # remove stereochemistry information
-        mol = Chem.MolFromSmiles(smi)
-        if filter_with_atom_types(mol):
-            coconut_set.add(Chem.MolToInchi(mol))
-    except:
-        pass
-
-coconut_inchis = list(coconut_set)
-random.shuffle(coconut_inchis)
-
-coconut_train_inchis = coconut_inchis[:int(0.95 * len(coconut_inchis))]
-coconut_val_inchis = coconut_inchis[int(0.95 * len(coconut_inchis)):]
-
-coconut_train_inchis = [inchi for inchi in coconut_train_inchis if inchi not in excluded_inchis]
-
-coconut_train_df = pd.DataFrame(coconut_train_inchis, columns=["inchi"])
-coconut_train_df.to_csv("../data/fp2mol/coconut/preprocessed/coconut_train.csv", index=False)
-
-coconut_val_df = pd.DataFrame(coconut_val_inchis, columns=["inchi"])
-coconut_val_df.to_csv("../data/fp2mol/coconut/preprocessed/coconut_val.csv", index=False)
-
-
-########## MOSES DATASET ##########
-
-moses_df = pd.read_csv('../data/fp2mol/raw/moses.csv')
-
-moses_set_raw = set(moses_df["SMILES"])
-
-moses_set = set()
-for smi in tqdm(moses_set_raw, desc='Cleaning MOSES structures', leave=False):
-    try:
-        mol = Chem.MolFromSmiles(smi)
-        smi = Chem.MolToSmiles(mol, isomericSmiles=False) # remove stereochemistry information
-        mol = Chem.MolFromSmiles(smi)
-        if filter_with_atom_types(mol):
-            moses_set.add(Chem.MolToInchi(mol))
-    except:
-        pass
-
-moses_inchis = list(moses_set)
-random.shuffle(moses_inchis)
-
-moses_train_inchis = moses_inchis[:int(0.95 * len(moses_inchis))]
-moses_val_inchis = moses_inchis[int(0.95 * len(moses_inchis)):]
-
-moses_train_inchis = [inchi for inchi in moses_train_inchis if inchi not in excluded_inchis]
-
-moses_train_df = pd.DataFrame(moses_train_inchis, columns=["inchi"])
-moses_train_df.to_csv("../data/fp2mol/moses/preprocessed/moses_train.csv", index=False)
-
-moses_val_df = pd.DataFrame(moses_val_inchis, columns=["inchi"])
-moses_val_df.to_csv("../data/fp2mol/moses/preprocessed/moses_val.csv", index=False)
-
-########## COMBINED DATASET ##########
-
-combined_inchis = hmdb_inchis + dss_inchis + coconut_inchis + moses_inchis
+combined_inchis = msg_train_inchis + msg_val_inchis + pubchem_train_inchis + pubchem_val_inchis
 combined_inchis = list(set(combined_inchis))
 random.shuffle(combined_inchis)
 
@@ -281,8 +183,8 @@ combined_train_inchis = combined_inchis[:int(0.95 * len(combined_inchis))]
 combined_val_inchis = combined_inchis[int(0.95 * len(combined_inchis)):]
 combined_train_inchis = [inchi for inchi in combined_train_inchis if inchi not in excluded_inchis]
 
-combined_train_df = pd.DataFrame(combined_train_inchis, columns=["inchi"])
-combined_train_df.to_csv("../data/fp2mol/combined/preprocessed/combined_train.csv", index=False)
+combined_train_df = pd.DataFrame({"inchi": combined_train_inchis})
+combined_train_df.to_csv("./data/fp2mol/combined/preprocessed/combined_train.csv", index=False)
 
-combined_val_df = pd.DataFrame(combined_val_inchis, columns=["inchi"])
-combined_val_df.to_csv("../data/fp2mol/combined/preprocessed/combined_val.csv", index=False)
+combined_val_df = pd.DataFrame({"inchi": combined_val_inchis})
+combined_val_df.to_csv("./data/fp2mol/combined/preprocessed/combined_val.csv", index=False)

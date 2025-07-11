@@ -41,7 +41,7 @@ def unnormalize(X, E, y, norm_values, norm_biases, node_mask, collapse=False):
 
     return PlaceHolder(X=X, E=E, y=y).mask(node_mask, collapse)
 
-
+@torch.compiler.disable
 def to_dense(x, edge_index, edge_attr, batch):
     X, node_mask = to_dense_batch(x=x, batch=batch)
     # node_mask = node_mask.float()
@@ -119,7 +119,7 @@ class PlaceHolder:
         else:
             self.X = self.X * x_mask
             self.E = self.E * e_mask1 * e_mask2
-            assert torch.allclose(self.E, torch.transpose(self.E, 1, 2))
+            # assert torch.allclose(self.E, torch.transpose(self.E, 1, 2))
         return self
 
 

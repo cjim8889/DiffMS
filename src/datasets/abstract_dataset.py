@@ -34,7 +34,7 @@ class CustomLightningDataset(LightningDataset):
         shuffle = not isinstance(self.train_dataset, IterableDataset)
         shuffle &= self.kwargs.get('sampler', None) is None
         shuffle &= self.kwargs.get('batch_sampler', None) is None
-        return self.dataloader(self.train_dataset, shuffle=shuffle, batch_size=self.batch_size, **self.kwargs)
+        return self.dataloader(self.train_dataset, shuffle=shuffle, batch_size=self.batch_size, drop_last=True, **self.kwargs)
 
     def val_dataloader(self) -> DataLoader:
         kwargs = copy.copy(self.kwargs)

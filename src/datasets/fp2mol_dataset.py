@@ -139,7 +139,7 @@ class FP2MolDataset(InMemoryDataset):
         else: raise ValueError(f"Invalid stage {self.stage}")
 
         super().__init__(root, None, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[self.file_idx])
+        self.data, self.slices = torch.load(self.processed_paths[self.file_idx], weights_only=False)
 
     @property
     def processed_dir(self):

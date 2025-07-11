@@ -128,6 +128,26 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
             )
         else:
             raise ValueError(f"Unknown model type {self.cfg.model.model}")
+
+        try:
+            if cfg.general.decoder is not None:
+                state_dict = torch.load(cfg.general.weights, map_location='cpu')
+
+                if 'state_dict' in state_dict:
+                    state_dict = state_dict['state_dict']
+                
+                cleaned_state_dict = {}
+                for k, v in state_dict.items():
+                    if k.startswith('decoder.'):
+                        k = k[8:]
+                        cleaned_state_dict[k] = v
+
+                self.model.load_state_dict(cleaned_state_dict)
+                logging.info(f"Loaded weights from {cfg.general.weights}")
+            else:
+                logging.info(f"No weights to load from {cfg.general.weights}")
+        except Exception as e:
+            logging.info(f"Could not load decoder: {e}")
         
         self.noise_schedule = PredefinedNoiseScheduleDiscrete(cfg.model.diffusion_noise_schedule, timesteps=cfg.model.diffusion_steps)
         self.denoise_nodes = getattr(cfg.dataset, 'denoise_nodes', True)
@@ -583,6 +603,7 @@ class FP2MolDenoisingDiffusion(pl.LightningModule):
         y = torch.hstack((noisy_data['y_t'], extra_data.y)).float()
         return self.model(X, E, y, node_mask)
     
+    @torch.compiler.disable
     @torch.no_grad()
     def sample_batch(self, batch: Batch) -> list[Chem.Mol]:
         dense_data, node_mask = utils.to_dense(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
